@@ -51,6 +51,14 @@ class SimpleQuery(BaseModel):
     ingredients: List[str]
     servings: Optional[int] = 2
     
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "ingredients": ["chicken", "onion", "rice"],
+                "servings": 2
+            }
+        }
+    
     
 class DetailedQuery(BaseModel):
     ingredients: List[str]
@@ -59,12 +67,38 @@ class DetailedQuery(BaseModel):
     cuisine_preference: Optional[str] = None
     cooking_time: Optional[int] = None
     
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "ingredients": ["chicken", "onion", "rice"],
+                "servings": 2,
+                "dietary_restrictions": ["diabetes"],
+                "cuisine_preference": "asian",
+                "cooking_time": 30
+            }
+        }
+    
         
 class RecipeResponse(BaseModel):
     title: str
-    recipe: str
-    status: str = "success"
+    ingredients: List[str]
+    instructions: List[str]
+    cooking_time: str
+    difficulty: str
+    notes: str
     timestamp: Optional[datetime] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "title": "Chicken Curry",
+                "ingredients": ["2 chicken breasts", "1 onion", "1 cup rice",],
+                "instructions": ["Cook the chicken", "Add the onions", "Serve with rice"],
+                "cooking_time": "30 minutes",
+                "difficulty": "easy",
+                "notes": "Add some soy sauce",
+            }
+        }
     
     
 # Root endpoint
@@ -89,16 +123,11 @@ async def get_recipe_simple(
     api_key: str = Security(api_key_header)
 ):
     try:
-        title, recipe = recommender.get_recipe(
+        recipe_data = recommender.get_recipe(
             ingredients=query.ingredients,
             servings=query.servings
         )
-        return RecipeResponse(
-            title=title,
-            recipe=recipe,
-            status="success",
-            timestamp=str(datetime.now())
-        )
+        return RecipeResponse(**recipe_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
@@ -109,19 +138,14 @@ async def get_recipe_detailed(
     api_key: str = Security(api_key_header)
 ):
     try:
-        title, recipe = recommender.get_recipe_with_parameters(
+        recipe_data = recommender.get_recipe_with_parameters(
             ingredients=query.ingredients,
             servings=query.servings,
             dietary_restrictions=query.dietary_restrictions,
             cuisine_preference=query.cuisine_preference,
             cooking_time=query.cooking_time
         )
-        return RecipeResponse(
-            title=title,
-            recipe=recipe,
-            status="success",
-            timestamp=str(datetime.now())
-        )
+        return RecipeResponse(**recipe_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     

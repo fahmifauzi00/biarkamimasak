@@ -1,10 +1,11 @@
 import os
+import re
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
 from typing import Optional, List
+from datetime import datetime
 
-load_dotenv()
 class RecipeRecommender:
     def __init__(self, 
                  api_key: Optional[str] = None,
@@ -39,49 +40,72 @@ class RecipeRecommender:
         # Define the recipe prompt template
         self.recipe_prompt = PromptTemplate(
             input_variables=["ingredients", "servings"],
-            template="""You are a goofy chef and recipe recommender. You are very friendly, funny and helpful. Given the following information:
-            
+            template="""You are a goofy chef and recipe recommender. You are very friendly, funny and helpful. 
+            Given the following information:
+
             Main Ingredients Available: {ingredients}
             Servings: {servings}
-            
-            Recommend a detailed recipe that:
-            1. Uses the provided ingredients (additional basic ingredients can be suggested)
-            2. Respects all dietary restrictions
-            3. Matches the cuisine preference if specified
-            4. Can be prepared within the time limit if specified
-            
-            Provide the recipe in the following format:
-            - Title
-            - Complete ingredients list with measurements
-            - Step-by-step instructions
-            - Cooking time
-            - Difficulty level
-            
-            Reply with humorous and helpful responses. Make some jokes where appropriate. Also reply with users input language.
-            """
+
+            Please provide a recipe that uses these ingredients (you can suggest additional basic ingredients).
+            Format your response EXACTLY as follows:
+
+            TITLE: [Recipe Name]
+
+            INGREDIENTS:
+            - [ingredient 1 with quantity]
+            - [ingredient 2 with quantity]
+            ...
+
+            INSTRUCTIONS:
+            1. [First step]
+            2. [Second step]
+            ...
+
+            COOKING TIME: [time in minutes]
+
+            DIFFICULTY: [Easy/Medium/Hard]
+
+            NOTES: [Add any helpful tips, substitutions, or humorous notes]
+
+            Remember to be funny and engaging, but follow this EXACT format. Make some jokes in the notes section.
+            Also reply with user's input language (Malay/English)."""
         )
         
         self.recipe_detailed_prompt = PromptTemplate(
-            input_variables=["servings", "ingredients", "diery_restrictions", "cuisine_preference", "cooking_time"],
-            template="""
-            You are a goofy chef and recipe recommender. You are very friendly, funny and helpful. Given the following information:
-            
+            input_variables=["context"],
+            template="""You are a goofy chef and recipe recommender. You are very friendly, funny and helpful. 
+            Given the following information:
+
             {context}
-            
-            Recommend a detailed recipe that:
+
+            Please provide a recipe that:
             1. Uses the provided ingredients (additional basic ingredients can be suggested)
             2. Respects all dietary restrictions
             3. Matches the cuisine preference if specified
             4. Can be prepared within the time limit if specified
-            
-            Provide the recipe in the following format:
-            - Title
-            - Complete ingredients list with measurements
-            - Step-by-step instructions
-            - Cooking time
-            - Difficulty level
-            
-            Reply with humorous and helpful responses. Make some jokes where appropriate. Also reply with users input language.
+
+            Format your response EXACTLY as follows:
+
+            TITLE: [Recipe Name]
+
+            INGREDIENTS:
+            - [ingredient 1 with quantity]
+            - [ingredient 2 with quantity]
+            ...
+
+            INSTRUCTIONS:
+            1. [First step]
+            2. [Second step]
+            ...
+
+            COOKING TIME: [time in minutes]
+
+            DIFFICULTY: [Easy/Medium/Hard]
+
+            NOTES: [Add any helpful tips, substitutions, or humorous notes]
+
+            Remember to be funny and engaging, but follow this EXACT format. Make some jokes in the notes section.
+            Also reply with user's input language (Malay/English).
             """
         )
 
@@ -89,98 +113,151 @@ class RecipeRecommender:
         self.recipe_chain = self.recipe_prompt | self.llm
         self.recipe_detailed_chain = self.recipe_detailed_prompt | self.llm
         
-    # To extract title and main content    
-    def extract_recipe_parts(self, recipe_text: str) -> tuple:
+        # To extract title and main content    
+    def extract_recipe_parts(self, recipe_text: str) -> dict:
         """
-        Extract title and content from the recipe text.
-        
+        Extract and structure recipe components from the LLM output.
+    
         Args:
             recipe_text (str): Complete recipe text from LLM
-        
+    
         Returns:
-            tuple: (title, content)
+            dict: Structured recipe data
         """
-        lines = recipe_text.strip().split('\n')
+        # Remove markdown formatting
+        recipe_text = recipe_text.replace('*', '').replace('#', '')
+    
+        # Initialize components
         title = ""
-        content = recipe_text
-        
+        ingredients = []
+        instructions = []
+        cooking_time = ""
+        difficulty = ""
+        notes = ""
+    
+        # Split into sections
+        current_section = None
+        lines = recipe_text.strip().split('\n')
+    
         for line in lines:
             line = line.strip()
-            if line and not line.startswith('-'):
-                title = line.replace('Title:', '').strip()
-                break
-        
-        if not title:
-            # Fallback: use first line if no clear title found
-            title = lines[0].strip()
-        
-        return title, content
+            if not line:
+                continue
+            
+            # Extract title
+            if 'TITLE:' in line.upper():
+                title = re.sub(r'^TITLE:\s*', '', line, flags=re.IGNORECASE)
+                continue
+            
+            # Identify sections
+            if 'INGREDIENTS:' in line.upper():
+                current_section = 'ingredients'
+                continue
+            elif 'INSTRUCTIONS:' in line.upper():
+                current_section = 'instructions'
+                continue
+            elif 'COOKING TIME:' in line.upper():
+                cooking_time = re.sub(r'^COOKING TIME:\s*', '', line, flags=re.IGNORECASE)
+                continue
+            elif 'DIFFICULTY:' in line.upper():
+                difficulty = re.sub(r'^DIFFICULTY:\s*', '', line, flags=re.IGNORECASE)
+                continue
+            elif 'NOTES:' in line.upper():
+                current_section = 'notes'
+                notes = re.sub(r'^NOTES:\s*', '', line, flags=re.IGNORECASE)
+                continue
+            
+            # Process line based on current section
+            if current_section == 'ingredients' and line.strip():
+                if line.startswith('-'):
+                    ingredients.append(line.replace('-', '').strip())
+                elif line.strip() and not any(section in line.upper() for section in ['TITLE:', 'INSTRUCTIONS:', 'COOKING TIME:', 'DIFFICULTY:', 'NOTES:']):
+                    ingredients.append(line.strip())
+                
+            elif current_section == 'instructions':
+                # Remove numbering and clean up
+                if line.strip():
+                    # Check if line starts with a number followed by a dot
+                    match = re.match(r'^\d+\.\s*(.+)$', line)
+                    if match:
+                        instructions.append(match.group(1).strip())
+                    elif not any(section in line.upper() for section in ['TITLE:', 'INGREDIENTS:', 'COOKING TIME:', 'DIFFICULTY:', 'NOTES:']):
+                        instructions.append(line.strip())
+                    
+            elif current_section == 'notes' and line.strip():
+                if notes:
+                    notes += " " + line.strip()
+                else:
+                    notes = line.strip()
+
+        # Set default values if sections are empty
+        if not notes:
+            notes = "No additional notes."
+        if not difficulty:
+            difficulty = "Not specified"
+        if not cooking_time:
+            cooking_time = "Not specified"
+
+        return {
+            'title': title,
+            'ingredients': ingredients,
+            'instructions': instructions,
+            'cooking_time': cooking_time,
+            'difficulty': difficulty,
+            'notes': notes
+        }
     
     # Simple recipe
-    def get_recipe(self, ingredients: List[str], servings: int = 2) -> tuple:
+    def get_recipe(self, ingredients: List[str], servings: int = 2) -> dict:
         """
-        Get a recipe recommendation based on the provided ingredients.
-        
+        Get a structured recipe recommendation based on the provided ingredients.
+    
         Args:
             ingredients (List[str]): List of available ingredients
             servings (int): Number of servings (default: 2)
-        
+    
         Returns:
-            tuple: (title, content) of the recipe
+            dict: Structured recipe data
         """
         ingredients_str = ", ".join(ingredients)
-        
+    
         response = self.recipe_chain.invoke({
             "ingredients": ingredients_str,
             "servings": servings
         })
-        return self.extract_recipe_parts(response.content)
+    
+        recipe_data = self.extract_recipe_parts(response.content)
+        recipe_data['timestamp'] = datetime.now()
+        return recipe_data
     
     # Detailed recipe
     def get_recipe_with_parameters(self,
-                                   ingredients: List[str],
-                                   servings: Optional[int] = 2,
-                                   dietary_restrictions: Optional[list] = None,
-                                   cuisine_preference: Optional[str] = None,
-                                   cooking_time: Optional[int] = None) -> str:
+                               ingredients: List[str],
+                               servings: Optional[int] = 2,
+                               dietary_restrictions: Optional[list] = None,
+                               cuisine_preference: Optional[str] = None,
+                               cooking_time: Optional[int] = None) -> dict:
         """
-        Get a recipe recommendation based on the provided parameters.
-        
-        Args:
-            servings (int): Number of people to serve
-            dietary_restrictions (list, optional): List of dietary restrictions
-            cuisine_preference (str, optional): Preferred cuisine type
-            cooking_time (int, optional): Cooking time in minutes
-            ingredients (list, optional): List of ingredients to use
-        
-        Returns:
-            str: Detailed recipe recommendation
+        Get a structured recipe recommendation based on the provided parameters.
         """
         ingredients_str = ", ".join(ingredients)
-    
-        # Build the context for the prompt
+
+        # Build the context
         context_parts = [
             f"Main Ingredients Available: {ingredients_str}",
             f"Servings: {servings or 2}"
         ]
-    
+
         if dietary_restrictions:
             context_parts.append(f"Dietary Restrictions: {', '.join(dietary_restrictions)}")
-        else:
-            context_parts.append("Dietary Restrictions: None specified")
-        
         if cuisine_preference:
             context_parts.append(f"Cuisine Preference: {cuisine_preference}")
-        else:
-            context_parts.append("Cuisine Preference: Any")
-        
         if cooking_time:
             context_parts.append(f"Maximum Cooking Time: {cooking_time} minutes")
-        else:
-            context_parts.append("Cooking Time: Not specified")
-    
+
         full_context = "\n".join(context_parts)
-    
-    
+
         response = self.recipe_detailed_chain.invoke({"context": full_context})
-        return self.extract_recipe_parts(response.content)
+        recipe_data = self.extract_recipe_parts(response.content)
+        recipe_data['timestamp'] = datetime.now()
+        return recipe_data
