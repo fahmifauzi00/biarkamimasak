@@ -50,6 +50,7 @@ The system features a goofy, friendly chef persona that makes cooking more enjoy
 - TypeScript
 - Tailwind CSS
 - Vercel Hosting
+
 [Frontend Source Code](https://github.com/wamofi97/biarkamimasak)
 
 ### Deployment
