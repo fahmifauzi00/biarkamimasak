@@ -159,7 +159,7 @@ These endpoints provide real-time streaming responses for a better user experien
 
 ## 👥 Team
 
-- Frontend Development: [Wan Firdaus](https://github.com/wamofi97)
+- Frontend Development: [Wan Firdaus](https://wnfrds.vercel.app/)
 - Backend API Development: [Fahmi Fauzi](https://github.com/fahmifauzi00)
 
 ## 📄 License
