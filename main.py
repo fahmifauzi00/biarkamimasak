@@ -1,7 +1,8 @@
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Security, Depends
-from fastapi.security.api_key import APIKeyHeader, APIKey
+from fastapi.security.api_key import APIKeyHeader
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from recommender import RecipeRecommender
@@ -148,6 +149,50 @@ async def get_recipe_detailed(
         return RecipeResponse(**recipe_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+# Streaming recipe endpoint
+@app.post("/v1/recipe/simple/stream")
+async def get_recipe_simple_stream(
+    query: SimpleQuery,
+    api_key: str = Security(api_key_header)
+):
+    async def generate():
+        try:
+            async for token in recommender.get_recipe_stream(
+                ingredients=query.ingredients,
+                servings=query.servings
+            ):
+                yield token
+        except Exception as e:
+            yield f"Error: {str(e)}"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream"
+    )
+
+@app.post("/v1/recipe/detailed/stream")
+async def get_recipe_detailed_stream(
+    query: DetailedQuery,
+    api_key: str = Security(api_key_header)
+):
+    async def generate():
+        try:
+            async for token in recommender.get_recipe_with_parameters_stream(
+                ingredients=query.ingredients,
+                servings=query.servings,
+                dietary_restrictions=query.dietary_restrictions,
+                cuisine_preference=query.cuisine_preference,
+                cooking_time=query.cooking_time
+            ):
+                yield token
+        except Exception as e:
+            yield f"Error: {str(e)}"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream"
+    )
     
 # Error handling
 @app.exception_handler(HTTPException)

@@ -18,3 +18,4 @@ nosetests.xml
 coverage.xml
 *.cover
 *.pyc
+test_streaming.py

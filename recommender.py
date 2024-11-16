@@ -1,9 +1,12 @@
 import os
 import re
+import asyncio
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
+from langchain.callbacks import AsyncIteratorCallbackHandler
+from langchain.schema import HumanMessage
 from dotenv import load_dotenv
-from typing import Optional, List
+from typing import Optional, List, AsyncIterator
 from datetime import datetime
 
 class RecipeRecommender:
@@ -261,3 +264,83 @@ class RecipeRecommender:
         recipe_data = self.extract_recipe_parts(response.content)
         recipe_data['timestamp'] = datetime.now()
         return recipe_data
+    
+    async def get_recipe_stream(self, ingredients: List[str], servings: int = 2) -> AsyncIterator[str]:
+        """
+        Get a streaming recipe recommendation based on the provided ingredients.
+        """
+        callback = AsyncIteratorCallbackHandler()
+        llm = ChatOpenAI(
+            streaming=True,
+            callbacks=[callback],
+            model=self.llm.model_name,
+            temperature=self.llm.temperature,
+            max_tokens=self.llm.max_tokens,
+        )
+
+        prompt = self.recipe_prompt.format(
+            ingredients=", ".join(ingredients),
+            servings=servings
+        )
+
+        task = asyncio.create_task(
+            llm.agenerate([[HumanMessage(content=prompt)]])
+        )
+
+        try:
+            async for token in callback.aiter():
+                yield token
+        except Exception as e:
+            print(f"Streaming error: {e}")
+            raise
+        finally:
+            callback.done.set()
+
+    async def get_recipe_with_parameters_stream(
+        self,
+        ingredients: List[str],
+        servings: Optional[int] = 2,
+        dietary_restrictions: Optional[list] = None,
+        cuisine_preference: Optional[str] = None,
+        cooking_time: Optional[int] = None
+    ) -> AsyncIterator[str]:
+        """
+        Get a streaming recipe recommendation with detailed parameters.
+        """
+        callback = AsyncIteratorCallbackHandler()
+        llm = ChatOpenAI(
+            streaming=True,
+            callbacks=[callback],
+            model=self.llm.model_name,
+            temperature=self.llm.temperature,
+            max_tokens=self.llm.max_tokens,
+        )
+
+        # Build the context
+        context_parts = [
+            f"Main Ingredients Available: {', '.join(ingredients)}",
+            f"Servings: {servings or 2}"
+        ]
+
+        if dietary_restrictions:
+            context_parts.append(f"Dietary Restrictions: {', '.join(dietary_restrictions)}")
+        if cuisine_preference:
+            context_parts.append(f"Cuisine Preference: {cuisine_preference}")
+        if cooking_time:
+            context_parts.append(f"Maximum Cooking Time: {cooking_time} minutes")
+
+        full_context = "\n".join(context_parts)
+        prompt = self.recipe_detailed_prompt.format(context=full_context)
+
+        task = asyncio.create_task(
+            llm.agenerate([[HumanMessage(content=prompt)]])
+        )
+
+        try:
+            async for token in callback.aiter():
+                yield token
+        except Exception as e:
+            print(f"Streaming error: {e}")
+            raise
+        finally:
+            callback.done.set()
