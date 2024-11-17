@@ -67,7 +67,7 @@ The system features a goofy, friendly chef persona that makes cooking more enjoy
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/biarkamimasak.git
+git clone https://github.com/fahmifauzi00/biarkamimasak
 cd biarkamimasak
 ```
 
