@@ -3,8 +3,6 @@ import re
 import asyncio
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
-from langchain.callbacks import AsyncIteratorCallbackHandler
-from langchain.schema import HumanMessage
 from dotenv import load_dotenv
 from typing import Optional, List, AsyncIterator
 from datetime import datetime
@@ -12,32 +10,46 @@ from datetime import datetime
 class RecipeRecommender:
     def __init__(self, 
                  api_key: Optional[str] = None,
-                 model: str = "gpt-4o-mini",
+                 model: Optional[str] = None,
+                 base_url: Optional[str] = None,
                  temperature: float = 0.7,
                  max_tokens: int = 1000):
         """
         Initialize the RecipeRecommender with custom settings.
         
         Args:
-            api_key (str, optional): OpenAI API key. If None, loads from environment.
-            model (str): Model to use for recommendations
-            base_url (str): Base URL for the API
+            api_key (str, optional): API key (OpenRouter or OpenAI). If None, loads from environment.
+            model (str, optional): Model to use for recommendations (defaults to google/gemma-4-31b-it:free)
+            base_url (str, optional): Base URL for the API (defaults to https://openrouter.ai/api/v1)
             temperature (float): Temperature setting for response generation
             max_tokens (int): Maximum tokens in the response
         """
-        # Load environment variables if no API key provided
+        # Load environment variables if needed
+        load_dotenv()
         if api_key is None:
-            load_dotenv()
-            api_key = os.getenv("OPENAI_API_KEY")
+            api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
             if api_key is None:
-                raise ValueError("No API key provided and none found in environment variables")
+                raise ValueError("No API key provided and neither OPENROUTER_API_KEY nor OPENAI_API_KEY found in environment variables")
+
+        self.api_key = api_key
+        self.model = model or os.getenv("OPENROUTER_MODEL") or "google/gemma-4-31b-it:free"
+        self.base_url = base_url or os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+        self.default_headers = {
+            "HTTP-Referer": os.getenv("OPENROUTER_HTTP_REFERER", "https://biarkamimasak.vercel.app"),
+            "X-Title": os.getenv("OPENROUTER_APP_TITLE", "Biar Kami Masak"),
+        }
 
         # Initialize the language model
         self.llm = ChatOpenAI(
-            model=model,
-            api_key=api_key,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            default_headers=self.default_headers,
         )
 
         # Define the recipe prompt template
@@ -269,32 +281,20 @@ class RecipeRecommender:
         """
         Get a streaming recipe recommendation based on the provided ingredients.
         """
-        callback = AsyncIteratorCallbackHandler()
-        llm = ChatOpenAI(
-            streaming=True,
-            callbacks=[callback],
-            model=self.llm.model_name,
-            temperature=self.llm.temperature,
-            max_tokens=self.llm.max_tokens,
-        )
-
         prompt = self.recipe_prompt.format(
             ingredients=", ".join(ingredients),
             servings=servings
         )
 
-        task = asyncio.create_task(
-            llm.agenerate([[HumanMessage(content=prompt)]])
-        )
-
         try:
-            async for token in callback.aiter():
-                yield token
+            async for chunk in self.llm.astream(prompt):
+                if hasattr(chunk, "content"):
+                    yield str(chunk.content)
+                elif isinstance(chunk, str):
+                    yield chunk
         except Exception as e:
             print(f"Streaming error: {e}")
             raise
-        finally:
-            callback.done.set()
 
     async def get_recipe_with_parameters_stream(
         self,
@@ -307,15 +307,6 @@ class RecipeRecommender:
         """
         Get a streaming recipe recommendation with detailed parameters.
         """
-        callback = AsyncIteratorCallbackHandler()
-        llm = ChatOpenAI(
-            streaming=True,
-            callbacks=[callback],
-            model=self.llm.model_name,
-            temperature=self.llm.temperature,
-            max_tokens=self.llm.max_tokens,
-        )
-
         # Build the context
         context_parts = [
             f"Main Ingredients Available: {', '.join(ingredients)}",
@@ -332,15 +323,12 @@ class RecipeRecommender:
         full_context = "\n".join(context_parts)
         prompt = self.recipe_detailed_prompt.format(context=full_context)
 
-        task = asyncio.create_task(
-            llm.agenerate([[HumanMessage(content=prompt)]])
-        )
-
         try:
-            async for token in callback.aiter():
-                yield token
+            async for chunk in self.llm.astream(prompt):
+                if hasattr(chunk, "content"):
+                    yield str(chunk.content)
+                elif isinstance(chunk, str):
+                    yield chunk
         except Exception as e:
             print(f"Streaming error: {e}")
             raise
-        finally:
-            callback.done.set()
