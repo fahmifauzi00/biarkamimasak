@@ -11,7 +11,7 @@ Visit our web application: [https://biarkamimasak.vercel.app/](https://biarkamim
 Biar Kami Masak is a full-stack application consisting of:
 - A FastAPI backend service deployed on Railway
 - A frontend web application hosted on Vercel
-- Integration with OpenRouter (Google Gemma 4 free tier) for intelligent recipe generation
+- Integration with OpenRouter (DeepSeek V4 Flash / configurable model) for intelligent recipe generation
 
 The system features a goofy, friendly chef persona that makes cooking more enjoyable by adding humor to the recipe recommendations while ensuring they remain practical and useful.
 
@@ -39,7 +39,7 @@ The system features a goofy, friendly chef persona that makes cooking more enjoy
 ### Backend
 - FastAPI
 - LangChain
-- OpenRouter (Google Gemma 4 Free Tier) / LangChain-OpenAI
+- OpenRouter (DeepSeek V4 Flash: deepseek/deepseek-v4-flash-0731) / LangChain-OpenAI
 - Python 3.x
 - Pydantic
 - python-dotenv
@@ -60,7 +60,7 @@ The system features a goofy, friendly chef persona that makes cooking more enjoy
 ## 📋 Prerequisites
 
 - Python 3.x
-- OpenRouter API key (free access at https://openrouter.ai)
+- OpenRouter API key (https://openrouter.ai)
 - Recipe API key (for authentication)
 
 ## 🚀 Installation
@@ -80,8 +80,8 @@ pip install -r requirements.txt
 ```env
 OPENROUTER_API_KEY=your_openrouter_api_key
 RECIPE_API_KEY=your_recipe_api_key
-# Optional: defaults to google/gemma-4-31b-it:free
-OPENROUTER_MODEL=google/gemma-4-31b-it:free
+# Optional: defaults to deepseek/deepseek-v4-flash-0731
+OPENROUTER_MODEL=deepseek/deepseek-v4-flash-0731
 ```
 
 ## 💻 API Usage
@@ -161,7 +161,7 @@ This project is configured to deploy directly on Railway using Dockerfile:
 3. **Environment Variables**: Add the following variables under **Variables** in Railway:
    - `OPENROUTER_API_KEY`: Your OpenRouter API key.
    - `RECIPE_API_KEY`: Secret API key used to protect recipe endpoints (`X-Recipe-API-Key`).
-   - *(Optional)* `OPENROUTER_MODEL`: Defaults to `google/gemma-4-31b-it:free`.
+   - *(Optional)* `OPENROUTER_MODEL`: Defaults to `deepseek/deepseek-v4-flash-0731`.
 4. **Healthcheck**: Railway monitors `/health` (unauthenticated, responds with `{"status":"healthy"}`).
 5. **Port**: The container automatically binds to `${PORT:-8000}` provided by Railway.
 
