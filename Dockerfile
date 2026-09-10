@@ -30,4 +30,4 @@ USER appuser
 EXPOSE 8000
 
 # Start FastAPI application using dynamic $PORT assigned by Railway
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["python", "main.py"]

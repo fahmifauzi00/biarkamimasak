@@ -227,3 +227,13 @@ async def generic_exception_handler(request, exc):
         "status": "error",
         "message": str(exc)
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    raw_port = os.getenv("PORT", "8000")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        print(f"WARNING: Invalid PORT environment variable '{raw_port}', falling back to port 8000")
+        port = 8000
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
