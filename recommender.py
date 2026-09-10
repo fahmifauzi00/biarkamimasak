@@ -15,7 +15,7 @@ class RecipeRecommender:
                  model: Optional[str] = None,
                  base_url: Optional[str] = None,
                  temperature: float = 0.7,
-                 max_tokens: int = 1000):
+                 max_tokens: int = 2000):
         """
         Initialize the RecipeRecommender with custom settings.
         
@@ -34,7 +34,7 @@ class RecipeRecommender:
                 raise ValueError("No API key provided and neither OPENROUTER_API_KEY nor OPENAI_API_KEY found in environment variables")
 
         self.api_key = api_key
-        self.model = model or os.getenv("OPENROUTER_MODEL") or "google/gemma-4-31b-it:free"
+        self.model = model or os.getenv("OPENROUTER_MODEL") or "deepseek/deepseek-v4-flash-0731"
         self.base_url = base_url or os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
         self.temperature = temperature
         self.max_tokens = max_tokens
