@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import asyncio
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -42,6 +43,18 @@ class RecipeRecommender:
             "X-Title": os.getenv("OPENROUTER_APP_TITLE", "Biar Kami Masak"),
         }
 
+        # Fallback model configuration (e.g. openrouter/free router)
+        fallback_model = os.getenv("OPENROUTER_FALLBACK_MODEL", "openrouter/free")
+        self.fallback_model = fallback_model
+
+        # Extra body for OpenRouter fallback routing if on OpenRouter
+        extra_body = {}
+        if "openrouter.ai" in self.base_url:
+            models_list = [self.model]
+            if fallback_model and fallback_model != self.model:
+                models_list.append(fallback_model)
+            extra_body = {"models": models_list, "route": "fallback"}
+
         # Initialize the language model
         self.llm = ChatOpenAI(
             model=self.model,
@@ -50,7 +63,23 @@ class RecipeRecommender:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             default_headers=self.default_headers,
+            model_kwargs={"extra_body": extra_body} if extra_body else {},
         )
+
+        # Fallback LLM instance for application-level failover on 429
+        self.fallback_llm = None
+        if fallback_model and fallback_model != self.model:
+            try:
+                self.fallback_llm = ChatOpenAI(
+                    model=fallback_model,
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    default_headers=self.default_headers,
+                )
+            except Exception as fb_err:
+                print(f"Notice: Fallback LLM initialization skipped: {fb_err}")
 
         # Define the recipe prompt template
         self.recipe_prompt = PromptTemplate(
@@ -127,6 +156,57 @@ class RecipeRecommender:
         # Create the recipe chain
         self.recipe_chain = self.recipe_prompt | self.llm
         self.recipe_detailed_chain = self.recipe_detailed_prompt | self.llm
+        if self.fallback_llm:
+            self.fallback_recipe_chain = self.recipe_prompt | self.fallback_llm
+            self.fallback_recipe_detailed_chain = self.recipe_detailed_prompt | self.fallback_llm
+        else:
+            self.fallback_recipe_chain = None
+            self.fallback_recipe_detailed_chain = None
+
+    def _invoke_chain_with_fallback(self, chain, fallback_chain, input_data: dict, max_retries: int = 2):
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                return chain.invoke(input_data)
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                is_rate_limited = "429" in err_str or "rate" in err_str or "temporarily" in err_str
+                if is_rate_limited and attempt < max_retries:
+                    sleep_time = (attempt + 1) * 2
+                    print(f"Rate limited upstream on {self.model}. Retrying in {sleep_time}s (attempt {attempt + 1}/{max_retries})...")
+                    time.sleep(sleep_time)
+                    continue
+                break
+
+        # If rate limited and fallback chain exists, try fallback
+        if fallback_chain and ("429" in str(last_error).lower() or "rate" in str(last_error).lower()):
+            try:
+                print(f"Primary model {self.model} rate-limited, failing over to {self.fallback_model}...")
+                return fallback_chain.invoke(input_data)
+            except Exception as fb_err:
+                print(f"Fallback model also failed: {fb_err}")
+
+        raise last_error
+
+    async def _stream_with_fallback(self, prompt: str):
+        try:
+            async for chunk in self.llm.astream(prompt):
+                if hasattr(chunk, "content"):
+                    yield str(chunk.content)
+                elif isinstance(chunk, str):
+                    yield chunk
+        except Exception as e:
+            err_str = str(e).lower()
+            if self.fallback_llm and ("429" in err_str or "rate" in err_str):
+                print(f"Primary streaming rate-limited, failing over to {self.fallback_model}...")
+                async for chunk in self.fallback_llm.astream(prompt):
+                    if hasattr(chunk, "content"):
+                        yield str(chunk.content)
+                    elif isinstance(chunk, str):
+                        yield chunk
+            else:
+                raise
         
         # To extract title and main content    
     def extract_recipe_parts(self, recipe_text: str) -> dict:
@@ -236,10 +316,14 @@ class RecipeRecommender:
         """
         ingredients_str = ", ".join(ingredients)
     
-        response = self.recipe_chain.invoke({
-            "ingredients": ingredients_str,
-            "servings": servings
-        })
+        response = self._invoke_chain_with_fallback(
+            chain=self.recipe_chain,
+            fallback_chain=self.fallback_recipe_chain,
+            input_data={
+                "ingredients": ingredients_str,
+                "servings": servings
+            }
+        )
     
         recipe_data = self.extract_recipe_parts(response.content)
         recipe_data['timestamp'] = datetime.now()
@@ -272,7 +356,11 @@ class RecipeRecommender:
 
         full_context = "\n".join(context_parts)
 
-        response = self.recipe_detailed_chain.invoke({"context": full_context})
+        response = self._invoke_chain_with_fallback(
+            chain=self.recipe_detailed_chain,
+            fallback_chain=self.fallback_recipe_detailed_chain,
+            input_data={"context": full_context}
+        )
         recipe_data = self.extract_recipe_parts(response.content)
         recipe_data['timestamp'] = datetime.now()
         return recipe_data
@@ -287,11 +375,8 @@ class RecipeRecommender:
         )
 
         try:
-            async for chunk in self.llm.astream(prompt):
-                if hasattr(chunk, "content"):
-                    yield str(chunk.content)
-                elif isinstance(chunk, str):
-                    yield chunk
+            async for token in self._stream_with_fallback(prompt):
+                yield token
         except Exception as e:
             print(f"Streaming error: {e}")
             raise
@@ -324,11 +409,8 @@ class RecipeRecommender:
         prompt = self.recipe_detailed_prompt.format(context=full_context)
 
         try:
-            async for chunk in self.llm.astream(prompt):
-                if hasattr(chunk, "content"):
-                    yield str(chunk.content)
-                elif isinstance(chunk, str):
-                    yield chunk
+            async for token in self._stream_with_fallback(prompt):
+                yield token
         except Exception as e:
             print(f"Streaming error: {e}")
             raise

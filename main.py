@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from recommender import RecipeRecommender
@@ -135,6 +135,17 @@ def root(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
+def handle_endpoint_exception(e: Exception):
+    if isinstance(e, HTTPException):
+        raise e
+    err_str = str(e)
+    if "429" in err_str or "rate-limit" in err_str.lower() or "rate limit" in err_str.lower():
+        raise HTTPException(
+            status_code=429,
+            detail=f"AI model provider is temporarily rate-limited. Please retry in a few moments. Details: {err_str}"
+        )
+    raise HTTPException(status_code=500, detail=err_str)
+
 # Simple query endpoint
 @app.post("/v1/recipe/simple", response_model=RecipeResponse)
 async def get_recipe_simple(
@@ -148,10 +159,8 @@ async def get_recipe_simple(
             servings=query.servings
         )
         return RecipeResponse(**recipe_data)
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e)
     
 # Detailed query endpoint
 @app.post("/v1/recipe/detailed", response_model=RecipeResponse)
@@ -169,10 +178,8 @@ async def get_recipe_detailed(
             cooking_time=query.cooking_time
         )
         return RecipeResponse(**recipe_data)
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        handle_endpoint_exception(e)
     
 # Streaming recipe endpoint
 @app.post("/v1/recipe/simple/stream")
@@ -222,11 +229,25 @@ async def get_recipe_detailed_stream(
     
 # Error handling
 @app.exception_handler(HTTPException)
-async def generic_exception_handler(request, exc):
-    return {
-        "status": "error",
-        "message": str(exc)
-    }
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": "error",
+            "message": exc.detail
+        },
+        headers=getattr(exc, "headers", None)
+    )
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": str(exc)
+        }
+    )
 
 if __name__ == "__main__":
     import uvicorn
