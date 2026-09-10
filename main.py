@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from recommender import RecipeRecommender
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,13 +70,14 @@ class SimpleQuery(BaseModel):
     ingredients: List[str]
     servings: Optional[int] = 2
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "ingredients": ["chicken", "onion", "rice"],
                 "servings": 2
             }
         }
+    )
     
     
 class DetailedQuery(BaseModel):
@@ -86,8 +87,8 @@ class DetailedQuery(BaseModel):
     cuisine_preference: Optional[str] = None
     cooking_time: Optional[int] = None
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "ingredients": ["chicken", "onion", "rice"],
                 "servings": 2,
@@ -96,6 +97,7 @@ class DetailedQuery(BaseModel):
                 "cooking_time": 30
             }
         }
+    )
     
         
 class RecipeResponse(BaseModel):
@@ -107,17 +109,18 @@ class RecipeResponse(BaseModel):
     notes: str
     timestamp: Optional[datetime] = None
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "title": "Chicken Curry",
-                "ingredients": ["2 chicken breasts", "1 onion", "1 cup rice",],
+                "ingredients": ["2 chicken breasts", "1 onion", "1 cup rice"],
                 "instructions": ["Cook the chicken", "Add the onions", "Serve with rice"],
                 "cooking_time": "30 minutes",
                 "difficulty": "easy",
                 "notes": "Add some soy sauce",
             }
         }
+    )
     
     
 # Root endpoint

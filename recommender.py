@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import asyncio
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
@@ -47,36 +48,42 @@ class RecipeRecommender:
         fallback_model = os.getenv("OPENROUTER_FALLBACK_MODEL", "openrouter/free")
         self.fallback_model = fallback_model
 
-        # Extra body for OpenRouter fallback routing if on OpenRouter
+        # Extra body for OpenRouter (disable reasoning mode to ensure full recipe generation without token waste)
         extra_body = {}
         if "openrouter.ai" in self.base_url:
             models_list = [self.model]
             if fallback_model and fallback_model != self.model:
                 models_list.append(fallback_model)
-            extra_body = {"models": models_list, "route": "fallback"}
+            extra_body = {
+                "models": models_list,
+                "route": "fallback",
+                "reasoning": {"effort": "none"}
+            }
 
-        # Initialize the language model
+        # Initialize the language model (pass extra_body directly to avoid UserWarning)
         self.llm = ChatOpenAI(
             model=self.model,
             api_key=self.api_key,
             base_url=self.base_url,
             temperature=self.temperature,
-            max_tokens=self.max_tokens,
+            max_tokens=self.max_tokens or 2000,
             default_headers=self.default_headers,
-            model_kwargs={"extra_body": extra_body} if extra_body else {},
+            extra_body=extra_body if extra_body else None,
         )
 
         # Fallback LLM instance for application-level failover on 429
         self.fallback_llm = None
         if fallback_model and fallback_model != self.model:
+            fallback_extra_body = {"reasoning": {"effort": "none"}} if "openrouter.ai" in self.base_url else None
             try:
                 self.fallback_llm = ChatOpenAI(
                     model=fallback_model,
                     api_key=self.api_key,
                     base_url=self.base_url,
                     temperature=self.temperature,
-                    max_tokens=self.max_tokens,
+                    max_tokens=self.max_tokens or 2000,
                     default_headers=self.default_headers,
+                    extra_body=fallback_extra_body,
                 )
             except Exception as fb_err:
                 print(f"Notice: Fallback LLM initialization skipped: {fb_err}")
@@ -208,90 +215,186 @@ class RecipeRecommender:
             else:
                 raise
         
-        # To extract title and main content    
-    def extract_recipe_parts(self, recipe_text: str) -> dict:
+    def _extract_text_content(self, content) -> str:
+        """Extract plain text string from str, list of content blocks, or dict."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            texts = []
+            for item in content:
+                if isinstance(item, str):
+                    texts.append(item)
+                elif isinstance(item, dict) and item.get("type") == "text":
+                    texts.append(item.get("text", ""))
+            return "\n".join(texts)
+        return str(content) if content is not None else ""
+
+    def extract_recipe_parts(self, raw_content) -> dict:
         """
         Extract and structure recipe components from the LLM output.
-    
-        Args:
-            recipe_text (str): Complete recipe text from LLM
-    
-        Returns:
-            dict: Structured recipe data
+        Handles markdown, plain text, JSON, Malay and English headings, and thought tags.
         """
-        # Remove markdown formatting
-        recipe_text = recipe_text.replace('*', '').replace('#', '')
-    
-        # Initialize components
+        recipe_text = self._extract_text_content(raw_content)
+
+        if not recipe_text or not recipe_text.strip():
+            print(f"WARNING: extract_recipe_parts received empty recipe_text (raw_content was: {repr(raw_content)})")
+            return {
+                'title': "Cadangan Resepi Masakan",
+                'ingredients': [],
+                'instructions': [],
+                'cooking_time': "Not specified",
+                'difficulty': "Not specified",
+                'notes': "No recipe content generated. Please try again."
+            }
+
+        print(f"DEBUG: recipe output length={len(recipe_text)}, snippet={repr(recipe_text[:200])}")
+
+        # Remove thinking/reasoning tags if present
+        clean_text = re.sub(r'<(thought|think)>.*?</\1>', '', recipe_text, flags=re.DOTALL).strip()
+        if not clean_text:
+            clean_text = recipe_text.strip()
+        else:
+            recipe_text = clean_text
+
+        # 1. Check if model returned JSON
+        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', recipe_text, flags=re.DOTALL)
+        possible_json = json_match.group(1) if json_match else recipe_text.strip()
+        if possible_json.startswith('{') and possible_json.endswith('}'):
+            try:
+                data = json.loads(possible_json)
+                if isinstance(data, dict):
+                    title = data.get('title') or data.get('recipe_name') or data.get('tajuk') or ""
+                    ingredients = data.get('ingredients') or data.get('bahan_bahan') or data.get('bahan') or []
+                    instructions = data.get('instructions') or data.get('steps') or data.get('arahan') or data.get('cara_cara') or []
+                    cooking_time = data.get('cooking_time') or data.get('time') or data.get('masa_memasak') or "Not specified"
+                    difficulty = data.get('difficulty') or data.get('tahap_kesukaran') or "Easy"
+                    notes = data.get('notes') or data.get('nota') or "No additional notes."
+
+                    if isinstance(ingredients, str):
+                        ingredients = [i.strip() for i in ingredients.split('\n') if i.strip()]
+                    if isinstance(instructions, str):
+                        instructions = [i.strip() for i in instructions.split('\n') if i.strip()]
+
+                    if title or ingredients or instructions:
+                        return {
+                            'title': str(title).strip(),
+                            'ingredients': [str(i) for i in ingredients],
+                            'instructions': [str(i) for i in instructions],
+                            'cooking_time': str(cooking_time).strip(),
+                            'difficulty': str(difficulty).strip(),
+                            'notes': str(notes).strip()
+                        }
+            except Exception as json_err:
+                print(f"DEBUG: JSON parse skipped: {json_err}")
+
+        # 2. Text line-by-line parsing
+        # Strip markdown bold/headers for matching
+        clean_lines = recipe_text.replace('**', '').replace('__', '').replace('#', '').strip().split('\n')
+
         title = ""
         ingredients = []
         instructions = []
         cooking_time = ""
         difficulty = ""
         notes = ""
-    
-        # Split into sections
+
         current_section = None
-        lines = recipe_text.strip().split('\n')
-    
-        for line in lines:
-            line = line.strip()
+
+        # Regex patterns supporting English & Malay
+        title_patterns = r'^(?:TITLE|TAJUK|RECIPE NAME|NAMA RESEPI)\s*[:=\-]\s*(.*)$'
+        ingredients_patterns = r'^(?:INGREDIENTS|BAHAN[\- ]BAHAN|BAHAN)\s*[:=\-]?\s*$'
+        instructions_patterns = r'^(?:INSTRUCTIONS|ARAHAN|LANGKAH[\- ]LANGKAH|CARA[\- ]CARA|STEPS|METHOD|DIRECTIONS)\s*[:=\-]?\s*$'
+        cooking_time_patterns = r'^(?:COOKING TIME|MASA MEMASAK|MASA|TIME)\s*[:=\-]\s*(.*)$'
+        difficulty_patterns = r'^(?:DIFFICULTY|TAHAP KESUKARAN|KESUKARAN)\s*[:=\-]\s*(.*)$'
+        notes_patterns = r'^(?:NOTES|NOTA|TIPS|CATATAN)\s*[:=\-]?\s*(.*)$'
+
+        for raw_line in clean_lines:
+            line = raw_line.strip()
             if not line:
                 continue
-            
-            # Extract title
-            if 'TITLE:' in line.upper():
-                title = re.sub(r'^TITLE:\s*', '', line, flags=re.IGNORECASE)
+
+            line_upper = line.upper()
+
+            # Check title
+            m = re.match(title_patterns, line, flags=re.IGNORECASE)
+            if m:
+                title = m.group(1).strip()
+                current_section = None
                 continue
-            
-            # Identify sections
-            if 'INGREDIENTS:' in line.upper():
+            elif 'TITLE:' in line_upper or 'TAJUK:' in line_upper:
+                title = re.sub(r'^(?:TITLE|TAJUK)\s*[:=\-]\s*', '', line, flags=re.IGNORECASE).strip()
+                current_section = None
+                continue
+
+            # Check cooking time
+            m = re.match(cooking_time_patterns, line, flags=re.IGNORECASE)
+            if m:
+                cooking_time = m.group(1).strip()
+                continue
+
+            # Check difficulty
+            m = re.match(difficulty_patterns, line, flags=re.IGNORECASE)
+            if m:
+                difficulty = m.group(1).strip()
+                continue
+
+            # Check ingredients section
+            if re.match(ingredients_patterns, line, flags=re.IGNORECASE) or line_upper.startswith('INGREDIENTS:') or line_upper.startswith('BAHAN-BAHAN:'):
                 current_section = 'ingredients'
                 continue
-            elif 'INSTRUCTIONS:' in line.upper():
+
+            # Check instructions section
+            if re.match(instructions_patterns, line, flags=re.IGNORECASE) or line_upper.startswith('INSTRUCTIONS:') or line_upper.startswith('ARAHAN:'):
                 current_section = 'instructions'
                 continue
-            elif 'COOKING TIME:' in line.upper():
-                cooking_time = re.sub(r'^COOKING TIME:\s*', '', line, flags=re.IGNORECASE)
-                continue
-            elif 'DIFFICULTY:' in line.upper():
-                difficulty = re.sub(r'^DIFFICULTY:\s*', '', line, flags=re.IGNORECASE)
-                continue
-            elif 'NOTES:' in line.upper():
-                current_section = 'notes'
-                notes = re.sub(r'^NOTES:\s*', '', line, flags=re.IGNORECASE)
-                continue
-            
-            # Process line based on current section
-            if current_section == 'ingredients' and line.strip():
-                if line.startswith('-'):
-                    ingredients.append(line.replace('-', '').strip())
-                elif line.strip() and not any(section in line.upper() for section in ['TITLE:', 'INSTRUCTIONS:', 'COOKING TIME:', 'DIFFICULTY:', 'NOTES:']):
-                    ingredients.append(line.strip())
-                
-            elif current_section == 'instructions':
-                # Remove numbering and clean up
-                if line.strip():
-                    # Check if line starts with a number followed by a dot
-                    match = re.match(r'^\d+\.\s*(.+)$', line)
-                    if match:
-                        instructions.append(match.group(1).strip())
-                    elif not any(section in line.upper() for section in ['TITLE:', 'INGREDIENTS:', 'COOKING TIME:', 'DIFFICULTY:', 'NOTES:']):
-                        instructions.append(line.strip())
-                    
-            elif current_section == 'notes' and line.strip():
-                if notes:
-                    notes += " " + line.strip()
-                else:
-                    notes = line.strip()
 
-        # Set default values if sections are empty
+            # Check notes section
+            m = re.match(notes_patterns, line, flags=re.IGNORECASE)
+            if m or line_upper.startswith('NOTES:') or line_upper.startswith('NOTA:'):
+                current_section = 'notes'
+                if m and m.group(1).strip():
+                    notes = m.group(1).strip()
+                else:
+                    notes = re.sub(r'^(?:NOTES|NOTA|TIPS|CATATAN)\s*[:=\-]?\s*', '', line, flags=re.IGNORECASE).strip()
+                continue
+
+            # Content collection
+            if current_section == 'ingredients':
+                item = re.sub(r'^[-*•\d+.]\s*', '', line).strip()
+                if item and not any(k in line_upper for k in ['INSTRUCTIONS:', 'ARAHAN:', 'COOKING TIME:', 'DIFFICULTY:', 'NOTES:']):
+                    ingredients.append(item)
+            elif current_section == 'instructions':
+                item = re.sub(r'^(?:Step\s*\d+|\d+)[.)\-:]\s*', '', line, flags=re.IGNORECASE).strip()
+                if item and not any(k in line_upper for k in ['COOKING TIME:', 'DIFFICULTY:', 'NOTES:', 'NOTA:']):
+                    instructions.append(item)
+            elif current_section == 'notes':
+                if notes:
+                    notes += " " + line
+                else:
+                    notes = line
+
+        # Heuristic fallbacks if sections were not recognized
+        if not title and clean_lines:
+            title = re.sub(r'^[-*•#\d+.]\s*', '', clean_lines[0]).strip()
+
+        if not ingredients and not instructions:
+            for line in clean_lines:
+                if line.startswith(('-', '*', '•')):
+                    ingredients.append(re.sub(r'^[-*•]\s*', '', line).strip())
+                elif re.match(r'^\d+[.)]\s*', line):
+                    instructions.append(re.sub(r'^\d+[.)]\s*', '', line).strip())
+
+        # Default fallbacks
         if not notes:
             notes = "No additional notes."
         if not difficulty:
-            difficulty = "Not specified"
+            difficulty = "Easy"
         if not cooking_time:
-            cooking_time = "Not specified"
+            cooking_time = "30 minutes"
+        if not title:
+            title = "Delicious Recipe"
+
+        print(f"DEBUG: Parsed recipe: title='{title}', ingredients={len(ingredients)}, instructions={len(instructions)}")
 
         return {
             'title': title,
