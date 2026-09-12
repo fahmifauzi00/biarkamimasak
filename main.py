@@ -38,12 +38,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Origins allowed to call this API from a browser.
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:4173",
+    "https://biarkamimasak.vercel.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept", "X-Recipe-API-Key"],
+    expose_headers=["Content-Type"],
 )
 
 recommender: Optional[RecipeRecommender] = None
